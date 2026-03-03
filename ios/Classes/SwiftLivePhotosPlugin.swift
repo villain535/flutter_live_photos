@@ -21,26 +21,33 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
                 result(false)
                 return
             }
-            let livePhotoClient = LivePhotoClient(callback: {() in
-                result(true)
+            let livePhotoClient = LivePhotoClient(callback: {(success) in
+                result(success)
             })
             livePhotoClient.runLivePhotoConvertionFromVideoURL(rawURL: videoURL)
+            
         case "generateFromLocalPath":
             let args = call.arguments as! [String: Any]
             guard let localPath = args["localPath"] as? String else {
+                print("🍎 [LivePhoto] ПОМИЛКА: Не передано localPath!")
                 result(false)
                 return
             }
-            let livePhotoClient = LivePhotoClient(callback: {() in
-                result(true)
+            let startTime = args["startTime"] as? Double ?? 0.0
+            let duration = args["duration"] as? Double ?? 0.0
+            
+            print("🍎 [LivePhoto] СТАРТ: Запит generateFromLocalPath. Start: \(startTime), Duration: \(duration)")
+            
+            let livePhotoClient = LivePhotoClient(callback: {(success) in
+                print("🍎 [LivePhoto] ФІНАЛЬНИЙ СТАТУС У FLUTTER: \(success)")
+                result(success)
             })
-            livePhotoClient.runLivePhotoConvertionFromLocalPath(rawURL: localPath)
+            livePhotoClient.runLivePhotoConvertionFromLocalPath(rawURL: localPath, startTime: startTime, duration: duration)
+            
         case "openSettings":
             if let url = URL(string: UIApplication.openSettingsURLString), UIApplication.shared.canOpenURL(url) {
                 if #available(iOS 10.0, *) {
                     UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                } else {
-                    // Fallback on earlier versions
                 }
             }
         default:
@@ -50,176 +57,176 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
 }
 
 class LivePhotoClient {
-    // LivePhoto変換の登場人物
     let SRC_KEY = "mp4"
     let STILL_KEY = "png"
     let MOV_KEY = "mov"
     
-    let completedCallback: (() -> Void)
+    let completedCallback: ((Bool) -> Void)
     
-    init(callback: @escaping () -> Void) {
+    init(callback: @escaping (Bool) -> Void) {
         completedCallback = callback
     }
     
-    // LivePhoto変換エントリポイント
     public func runLivePhotoConvertionFromVideoURL(rawURL: String) {
         if let videoURL = URL(string: rawURL) {
             let photos = PHPhotoLibrary.authorizationStatus()
             if photos == .notDetermined {
                 PHPhotoLibrary.requestAuthorization({status in
                     if status == .authorized{
-                        self.downloadAsync(
-                            url: videoURL,
-                            to: self.filePath(forKey: self.SRC_KEY),
-                            completion: self.convertMp4ToMov
-                        )
+                        self.downloadAsync(url: videoURL, to: self.filePath(forKey: self.SRC_KEY)) { downloadedUrl in
+                            self.convertMp4ToMov(mp4Path: downloadedUrl)
+                        }
                     } else {
-                        print("CameraRoll permission denied")
+                        self.completedCallback(false)
                     }
                 })
             } else {
-                self.downloadAsync(
-                    url: videoURL,
-                    to: self.filePath(forKey: self.SRC_KEY),
-                    completion: self.convertMp4ToMov
-                )
-            }
-        }
-    }
-
-    // LivePhoto変換エントリポイント
-    public func runLivePhotoConvertionFromLocalPath(rawURL: String) {
-        if let localPath = URL(string: rawURL) {
-            let photos = PHPhotoLibrary.authorizationStatus()
-            print("Init files")
-            let pngPath = self.filePath(forKey: STILL_KEY)!
-            let outputPath = self.filePath(forKey: MOV_KEY)!
-            self.deleteFile(url: pngPath)
-            self.deleteFile(url: outputPath)
-            self.copy(localPath, toPathName: outputPath)
-            if photos == .notDetermined {
-                PHPhotoLibrary.requestAuthorization({status in
-                    if status == .authorized{
-                        print("AVAssetExportSessionStatus completed")
-                        self.generateThumbnail(movURL: localPath)
-                        print("generateThumbnail completed")
-                        self.generateLivePhoto()
-                    } else {
-                        print("CameraRoll permission denied")
-                    }
-                })
-            } else {
-                print("AVAssetExportSessionStatus completed")
-                self.generateThumbnail(movURL: outputPath)
-                print("generateThumbnail completed")
-                self.generateLivePhoto()
-            }
-        }
-    }
-
-    // MP4をMovに変換する
-    private func convertMp4ToMov(mp4Path: URL) {
-        // srcのビデオをmovに変換する
-        let avAsset = AVURLAsset(url: mp4Path)
-        let preset = AVAssetExportPresetPassthrough
-        let outFileType = AVFileType.mov
-        if let exportSession = AVAssetExportSession(asset: avAsset, presetName: preset), let outputURL = self.filePath(forKey: MOV_KEY) {
-            
-            AVAssetExportSession.determineCompatibility(ofExportPreset: preset, with: avAsset, outputFileType: outFileType, completionHandler: { (isCompatible) in
-                if !isCompatible {
-                    return
-            }})
-            
-            exportSession.outputFileType = outFileType
-            exportSession.outputURL = outputURL
-            self.deleteFile(url: outputURL)
-            
-            exportSession.exportAsynchronously { () -> Void in
-                switch exportSession.status {
-                case AVAssetExportSession.Status.completed:
-                    print("AVAssetExportSessionStatus completed")
-                    self.generateThumbnail(movURL: outputURL)
-                    print("generateThumbnail completed")
-                    self.generateLivePhoto()
-                    break
-                case AVAssetExportSession.Status.failed:
-                    print("AVAssetExportSessionStatus failed. \(String(describing: exportSession.error))")
-                    break
-                case AVAssetExportSession.Status.cancelled:
-                    print("AVAssetExportSessionStatus cancelled")
-                    break
-                default:
-                    break
+                self.downloadAsync(url: videoURL, to: self.filePath(forKey: self.SRC_KEY)) { downloadedUrl in
+                    self.convertMp4ToMov(mp4Path: downloadedUrl)
                 }
             }
         }
     }
+
+    public func runLivePhotoConvertionFromLocalPath(rawURL: String, startTime: Double = 0.0, duration: Double = 0.0) {
+        if let localPath = URL(string: rawURL) {
+            let photos = PHPhotoLibrary.authorizationStatus()
+            let pngPath = self.filePath(forKey: STILL_KEY)!
+            let outputPath = self.filePath(forKey: MOV_KEY)!
+            self.deleteFile(url: pngPath)
+            self.deleteFile(url: outputPath)
+            
+            if photos == .notDetermined {
+                print("🍎 [LivePhoto] Запит дозволу на фото...")
+                PHPhotoLibrary.requestAuthorization({status in
+                    if status == .authorized{
+                        print("🍎 [LivePhoto] Дозвіл отримано!")
+                        self.convertMp4ToMov(mp4Path: localPath, startTime: startTime, duration: duration)
+                    } else {
+                        print("🍎 [LivePhoto] ПОМИЛКА: Відмовлено в доступі до галереї!")
+                        self.completedCallback(false)
+                    }
+                })
+            } else if photos == .authorized || photos == .limited {
+                print("🍎 [LivePhoto] Дозвіл є. Переходимо до обрізки...")
+                self.convertMp4ToMov(mp4Path: localPath, startTime: startTime, duration: duration)
+            } else {
+                print("🍎 [LivePhoto] ПОМИЛКА: Немає прав на галерею")
+                self.completedCallback(false)
+            }
+        } else {
+            self.completedCallback(false)
+        }
+    }
+
+    private func convertMp4ToMov(mp4Path: URL, startTime: Double = 0.0, duration: Double = 0.0) {
+        print("🍎 [LivePhoto] КРОК 1: Базова обрізка по часу...")
+        let avAsset = AVURLAsset(url: mp4Path)
+        let preset = AVAssetExportPresetPassthrough
+        let outFileType = AVFileType.mov
+        
+        if let exportSession = AVAssetExportSession(asset: avAsset, presetName: preset), let outputURL = self.filePath(forKey: MOV_KEY) {
+            exportSession.outputFileType = outFileType
+            exportSession.outputURL = outputURL
+            self.deleteFile(url: outputURL)
+            
+            if startTime > 0 || duration > 0 {
+                let start = CMTime(seconds: startTime, preferredTimescale: 600)
+                let dur = duration > 0 ? CMTime(seconds: duration, preferredTimescale: 600) : avAsset.duration
+                exportSession.timeRange = CMTimeRange(start: start, duration: dur)
+            }
+            
+            exportSession.exportAsynchronously { () -> Void in
+                switch exportSession.status {
+                case .completed:
+                    print("🍎 [LivePhoto] УСПІХ КРОК 1: Відео обрізано.")
+                    self.generateThumbnail(movURL: outputURL)
+                    self.generateLivePhoto()
+                case .failed:
+                    print("🍎 [LivePhoto] ПОМИЛКА КРОК 1: Експорт провалився.")
+                    self.completedCallback(false)
+                case .cancelled:
+                    self.completedCallback(false)
+                default:
+                    break
+                }
+            }
+        } else {
+            self.completedCallback(false)
+        }
+    }
     
-    // LivePhotoの生成
     private func generateLivePhoto() {
         let pngPath = self.filePath(forKey: STILL_KEY)!
         let movPath = self.filePath(forKey: MOV_KEY)!
         if #available(iOS 9.1, *) {
-            print("Start to generate LivePhoto")
+            print("🍎 [LivePhoto] КРОК 3: Об'єднання в LivePhoto...")
             LivePhoto.generate(from: pngPath, videoURL: movPath, progress: { percent in }, completion: { livePhoto, resources in
-                print("Generation done")
                 if let resources = resources {
-                    print("Success to generate Live Photo")
+                    print("🍎 [LivePhoto] Збереження в галерею...")
                     LivePhoto.saveToLibrary(resources, completion: {(success) in
                         if success {
-                            print("Successed to save Photos")
-                            self.completedCallback()
+                            print("🍎 [LivePhoto] ФІНІШ: УСПІШНО ЗБЕРЕЖЕНО!")
+                            self.completedCallback(true)
                         } else {
-                            print("Failed to save Photos")
-                            self.completedCallback()
+                            print("🍎 [LivePhoto] ПОМИЛКА ФІНІШ.")
+                            self.completedCallback(false)
                         }
                     })
+                } else {
+                    self.completedCallback(false)
                 }
             })
         }
     }
     
-    // ビデオからサムネイルpngを生成する
     private func generateThumbnail(movURL: URL?) {
+        print("🍎 [LivePhoto] КРОК 2: Генерація та масштабування обкладинки...")
         guard let movURL = movURL else { return }
         let asset = AVURLAsset(url: movURL, options: nil)
         let imgGenerator = AVAssetImageGenerator(asset: asset)
+        imgGenerator.appliesPreferredTrackTransform = true
         let filePath = self.filePath(forKey: STILL_KEY)
+        
         if let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil) {
-            let pngImage = UIImage(cgImage: cgImage)
-            if let pngRep = pngImage.pngData() {
+            let originalImage = UIImage(cgImage: cgImage)
+            print("🍎 [LivePhoto] Оригінальний розмір: \(originalImage.size)")
+            
+            let targetSize = CGSize(width: 1080, height: 1920)
+            let widthRatio = targetSize.width / originalImage.size.width
+            let heightRatio = targetSize.height / originalImage.size.height
+            let scaleFactor = max(widthRatio, heightRatio)
+            
+            let scaledSize = CGSize(width: originalImage.size.width * scaleFactor, height: originalImage.size.height * scaleFactor)
+            let origin = CGPoint(x: (targetSize.width - scaledSize.width) / 2.0, y: (targetSize.height - scaledSize.height) / 2.0)
+            
+            UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
+            originalImage.draw(in: CGRect(origin: origin, size: scaledSize))
+            let scaledImage = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            
+            if let finalImage = scaledImage, let data = finalImage.pngData() {
+                print("🍎 [LivePhoto] Відмасштабовано до: \(finalImage.size)")
                 if let filePath = filePath {
                     do {
                         self.deleteFile(url: filePath)
-                        try pngRep.write(to: filePath, options: .atomic)
-                    } catch let err {
-                        print("Failed to generate png: \(err)")
+                        try data.write(to: filePath, options: .atomic)
+                    } catch {
+                        print("🍎 [LivePhoto] ПОМИЛКА збереження png")
                     }
-                } else {
-                    print("filePath nil")
                 }
-            } else {
-                print("pngRep nil")
             }
         }
     }
     
-    // 非同期ダウンロード
     private func downloadAsync(url: URL, to localUrl: URL?, completion: @escaping (_: URL) -> ()) {
-        let sessionConfig = URLSessionConfiguration.default
-        let session = URLSession(configuration: sessionConfig)
-        let request = URLRequest(url: url)
-        let task = session.downloadTask(with: request) {(tempLocalUrl, response, error) in
+        let task = URLSession.shared.downloadTask(with: URLRequest(url: url)) {(tempLocalUrl, response, error) in
             if let tempLocalUrl = tempLocalUrl, let localUrl = localUrl, error == nil {
                 do {
                     self.deleteFile(url: localUrl)
                     try FileManager.default.copyItem(at: tempLocalUrl, to: localUrl)
                     completion(localUrl)
-                } catch let err {
-                    print(err)
-                }
-            } else {
-                print("Downloading Locally error")
+                } catch { }
             }
         }
         task.resume()
@@ -227,78 +234,33 @@ class LivePhotoClient {
     
     private func filePath(forKey key: String) -> URL? {
         let fileManager = FileManager.default
-        guard let documentURL = fileManager.urls(for: .documentDirectory,
-                                                in: FileManager.SearchPathDomainMask.userDomainMask).first else { return nil }
+        guard let documentURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
         return documentURL.appendingPathComponent(key + "." + key)
-    }
-    
-    private func copy(_ atPathName: URL, toPathName: URL) {
-        let fileManager = FileManager.default
-        do {
-            try fileManager.copyItem(atPath: atPathName.path, toPath: toPathName.path)
-        } catch {
-            print("Failed to copy file")
-        }
     }
     
     private func deleteFile(url: URL) {
         if FileManager.default.fileExists(atPath: url.path) {
-            print("Delete existing file")
-            do {
-                try FileManager.default.removeItem(atPath: url.path)
-            } catch {
-                print("Failed to delete file")
-            }
+            try? FileManager.default.removeItem(atPath: url.path)
         }
     }
 }
 
-//
-//  LivePhoto.swift
-//  Live Photos
-//  https://github.com/LimitPoint/LivePhoto
-//
-//  Created by Alexander Pagliaro on 7/25/18.
-//  Copyright © 2018 Limit Point LLC. All rights reserved.
-//
-
 class LivePhoto {
-    // MARK: PUBLIC
     typealias LivePhotoResources = (pairedImage: URL, pairedVideo: URL)
-    /// Returns the paired image and video for the given PHLivePhoto
-    @available(iOS 9.1, *)
-    public class func extractResources(from livePhoto: PHLivePhoto, completion: @escaping (LivePhotoResources?) -> Void) {
-        queue.async {
-            shared.extractResources(from: livePhoto, completion: completion)
-        }
-    }
-    /// Generates a PHLivePhoto from an image and video.  Also returns the paired image and video.
-    @available(iOS 9.1, *)
-    public class func generate(from imageURL: URL?, videoURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (PHLivePhoto?, LivePhotoResources?) -> Void) {
-        queue.async {
-            shared.generate(from: imageURL, videoURL: videoURL, progress: progress, completion: completion)
-        }
-    }
-    /// Save a Live Photo to the Photo Library by passing the paired image and video.
+    
     public class func saveToLibrary(_ resources: LivePhotoResources, completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.shared().performChanges({
             if #available(iOS 9.1, *) {
                 let creationRequest = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
-                creationRequest.addResource(with: PHAssetResourceType.pairedVideo, fileURL: resources.pairedVideo, options: options)
-                creationRequest.addResource(with: PHAssetResourceType.photo, fileURL: resources.pairedImage, options: options)
-            } else {
-                // Fallback on earlier versions
+                creationRequest.addResource(with: .pairedVideo, fileURL: resources.pairedVideo, options: options)
+                creationRequest.addResource(with: .photo, fileURL: resources.pairedImage, options: options)
             }
         }, completionHandler: { (success, error) in
-            if error != nil {
-                print(error as Any)
-            }
             completion(success)
         })
     }
     
-    // MARK: PRIVATE
     private static let shared = LivePhoto()
     private static let queue = DispatchQueue(label: "com.limit-point.LivePhotoQueue", attributes: .concurrent)
     lazy private var cacheDirectory: URL? = {
@@ -312,24 +274,8 @@ class LivePhoto {
         return nil
     }()
     
-    deinit {
-        clearCache()
-    }
+    deinit { clearCache() }
     
-    private func generateKeyPhoto(from videoURL: URL) -> URL? {
-        var percent:Float = 0.5
-        let videoAsset = AVURLAsset(url: videoURL)
-        if let stillImageTime = videoAsset.stillImageTime() {
-            percent = Float(stillImageTime.value) / Float(videoAsset.duration.value)
-        }
-        guard let imageFrame = videoAsset.getAssetFrame(percent: percent) else { return nil }
-        guard let jpegData = imageFrame.jpegData(compressionQuality: 1.0) else { return nil }
-        guard let url = cacheDirectory?.appendingPathComponent(UUID().uuidString).appendingPathExtension("jpg") else { return nil }
-        do {
-            try? jpegData.write(to: url)
-            return url
-        }
-    }
     private func clearCache() {
         if let cacheDirectory = cacheDirectory {
             try? FileManager.default.removeItem(at: cacheDirectory)
@@ -337,185 +283,102 @@ class LivePhoto {
     }
     
     @available(iOS 9.1, *)
+    public class func generate(from imageURL: URL?, videoURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (PHLivePhoto?, LivePhotoResources?) -> Void) {
+        queue.async {
+            shared.generate(from: imageURL, videoURL: videoURL, progress: progress, completion: completion)
+        }
+    }
+    
+    @available(iOS 9.1, *)
     private func generate(from imageURL: URL?, videoURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (PHLivePhoto?, LivePhotoResources?) -> Void) {
         guard let cacheDirectory = cacheDirectory else {
-            DispatchQueue.main.async {
-                completion(nil, nil)
-            }
+            DispatchQueue.main.async { completion(nil, nil) }
             return
         }
         let assetIdentifier = UUID().uuidString
-        let _keyPhotoURL = imageURL ?? generateKeyPhoto(from: videoURL)
-        guard let keyPhotoURL = _keyPhotoURL, let pairedImageURL = addAssetID(assetIdentifier, toImage: keyPhotoURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("jpg")) else {
-            DispatchQueue.main.async {
-                completion(nil, nil)
-            }
+        guard let imageURL = imageURL, let pairedImageURL = addAssetID(assetIdentifier, toImage: imageURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("jpg")) else {
+            DispatchQueue.main.async { completion(nil, nil) }
             return
         }
+        
+        print("🍎 [LivePhoto] Транскодування відео (1080x1920 + HEVC)...")
         addAssetID(assetIdentifier, toVideo: videoURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("mov"), progress: progress) { (_videoURL) in
             if let pairedVideoURL = _videoURL {
-                _ = PHLivePhoto.request(withResourceFileURLs: [pairedVideoURL, pairedImageURL], placeholderImage: nil, targetSize: CGSize.zero, contentMode: PHImageContentMode.aspectFit, resultHandler: { (livePhoto: PHLivePhoto?, info: [AnyHashable : Any]) -> Void in
-                    if let isDegraded = info[PHLivePhotoInfoIsDegradedKey] as? Bool, isDegraded {
-                        return
-                    }
+                _ = PHLivePhoto.request(withResourceFileURLs: [pairedVideoURL, pairedImageURL], placeholderImage: nil, targetSize: CGSize.zero, contentMode: .aspectFit, resultHandler: { (livePhoto: PHLivePhoto?, info: [AnyHashable : Any]) -> Void in
+                    if let isDegraded = info[PHLivePhotoInfoIsDegradedKey] as? Bool, isDegraded { return }
                     DispatchQueue.main.async {
                         completion(livePhoto, (pairedImageURL, pairedVideoURL))
                     }
                 })
             } else {
-                DispatchQueue.main.async {
-                    completion(nil, nil)
-                }
+                DispatchQueue.main.async { completion(nil, nil) }
             }
         }
-    }
-    
-    @available(iOS 9.1, *)
-    private func extractResources(from livePhoto: PHLivePhoto, to directoryURL: URL, completion: @escaping (LivePhotoResources?) -> Void) {
-        let assetResources = PHAssetResource.assetResources(for: livePhoto)
-        let group = DispatchGroup()
-        var keyPhotoURL: URL?
-        var videoURL: URL?
-        for resource in assetResources {
-            let buffer = NSMutableData()
-            let options = PHAssetResourceRequestOptions()
-            options.isNetworkAccessAllowed = true
-            group.enter()
-            PHAssetResourceManager.default().requestData(for: resource, options: options, dataReceivedHandler: { (data) in
-                buffer.append(data)
-            }) { (error) in
-                if error == nil {
-                    if resource.type == .pairedVideo {
-                        videoURL = self.saveAssetResource(resource, to: directoryURL, resourceData: buffer as Data)
-                    } else {
-                        keyPhotoURL = self.saveAssetResource(resource, to: directoryURL, resourceData: buffer as Data)
-                    }
-                } else {
-                    print(error as Any)
-                }
-                group.leave()
-            }
-        }
-        group.notify(queue: DispatchQueue.main) {
-            guard let pairedPhotoURL = keyPhotoURL, let pairedVideoURL = videoURL else {
-                completion(nil)
-                return
-            }
-            completion((pairedPhotoURL, pairedVideoURL))
-        }
-    }
-    
-    @available(iOS 9.1, *)
-    private func extractResources(from livePhoto: PHLivePhoto, completion: @escaping (LivePhotoResources?) -> Void) {
-        if let cacheDirectory = cacheDirectory {
-            extractResources(from: livePhoto, to: cacheDirectory, completion: completion)
-        }
-    }
-    
-    @available(iOS 9, *)
-    private func saveAssetResource(_ resource: PHAssetResource, to directory: URL, resourceData: Data) -> URL? {
-        let fileExtension = UTTypeCopyPreferredTagWithClass(resource.uniformTypeIdentifier as CFString,kUTTagClassFilenameExtension)?.takeRetainedValue()
-        
-        guard let ext = fileExtension else {
-            return nil
-        }
-        
-        var fileUrl = directory.appendingPathComponent(NSUUID().uuidString)
-        fileUrl = fileUrl.appendingPathExtension(ext as String)
-        
-        do {
-            try resourceData.write(to: fileUrl, options: [Data.WritingOptions.atomic])
-        } catch {
-            print("Could not save resource \(resource) to filepath \(String(describing: fileUrl))")
-            return nil
-        }
-        
-        return fileUrl
     }
     
     func addAssetID(_ assetIdentifier: String, toImage imageURL: URL, saveTo destinationURL: URL) -> URL? {
         guard let imageDestination = CGImageDestinationCreateWithURL(destinationURL as CFURL, kUTTypeJPEG, 1, nil),
             let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
             var imageProperties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [AnyHashable : Any] else { return nil }
-        let assetIdentifierKey = "17"
-        let assetIdentifierInfo = [assetIdentifierKey : assetIdentifier]
+        let assetIdentifierInfo = ["17" : assetIdentifier]
         imageProperties[kCGImagePropertyMakerAppleDictionary] = assetIdentifierInfo
         CGImageDestinationAddImageFromSource(imageDestination, imageSource, 0, imageProperties as CFDictionary)
         CGImageDestinationFinalize(imageDestination)
         return destinationURL
     }
     
-    var audioReader: AVAssetReader?
     var videoReader: AVAssetReader?
     var assetWriter: AVAssetWriter?
     
     func addAssetID(_ assetIdentifier: String, toVideo videoURL: URL, saveTo destinationURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (URL?) -> Void) {
         
-        var audioWriterInput: AVAssetWriterInput?
-        var audioReaderOutput: AVAssetReaderOutput?
         let videoAsset = AVURLAsset(url: videoURL)
         let frameCount = videoAsset.countFrames(exact: false)
         guard let videoTrack = videoAsset.tracks(withMediaType: .video).first else {
             completion(nil)
             return
         }
+        
         do {
-            // Create the Asset Writer
             assetWriter = try AVAssetWriter(outputURL: destinationURL, fileType: .mov)
-            // Create Video Reader Output
             videoReader = try AVAssetReader(asset: videoAsset)
             let videoReaderSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: kCVPixelFormatType_32BGRA as UInt32)]
             let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: videoReaderSettings)
             videoReader?.add(videoReaderOutput)
-            // Create Video Writer Input
+            
             let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.hevc,
-                AVVideoWidthKey: videoTrack.naturalSize.width,
-                AVVideoHeightKey: videoTrack.naturalSize.height,
+                AVVideoWidthKey: 1080,
+                AVVideoHeightKey: 1920,
+                AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: videoTrack.estimatedDataRate,
-                    AVVideoProfileLevelKey: "HEVC_Main_AutoLevel" as CFString
+                    AVVideoAverageBitRateKey: 6000000,
+                    AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel
                 ]
             ])
             videoWriterInput.transform = videoTrack.preferredTransform
             videoWriterInput.expectsMediaDataInRealTime = true
             assetWriter?.add(videoWriterInput)
-            // Create Audio Reader Output & Writer Input
-            if let audioTrack = videoAsset.tracks(withMediaType: .audio).first {
-                do {
-                    let _audioReader = try AVAssetReader(asset: videoAsset)
-                    let _audioReaderOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-                    _audioReader.add(_audioReaderOutput)
-                    audioReader = _audioReader
-                    audioReaderOutput = _audioReaderOutput
-                    let _audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-                    _audioWriterInput.expectsMediaDataInRealTime = false
-                    assetWriter?.add(_audioWriterInput)
-                    audioWriterInput = _audioWriterInput
-                } catch {
-                    print(error)
-                }
-            }
-            // Create necessary identifier metadata and still image time metadata
+            
             let assetIdentifierMetadata = metadataForAssetID(assetIdentifier)
             let stillImageTimeMetadataAdapter = createMetadataAdaptorForStillImageTime()
             let livePhotoAutoMetadataAdapter = createMetadataAdaptorForLivePhotoAuto()
             assetWriter?.metadata = [assetIdentifierMetadata]
             assetWriter?.add(stillImageTimeMetadataAdapter.assetWriterInput)
             assetWriter?.add(livePhotoAutoMetadataAdapter.assetWriterInput)
-            // Start the Asset Writer
+            
             assetWriter?.startWriting()
             assetWriter?.startSession(atSourceTime: CMTime.zero)
-            // Add still image metadata
+            
             let _stillImagePercent: Float = 0.5
             stillImageTimeMetadataAdapter.append(AVTimedMetadataGroup(items: [metadataItemForStillImageTime()],timeRange: videoAsset.makeStillImageTimeRange(percent: _stillImagePercent, inFrameCount: frameCount)))
             livePhotoAutoMetadataAdapter.append(AVTimedMetadataGroup(items: [metadataItemForLivePhotoAuto()], timeRange: videoAsset.makeStillImageTimeRange(percent: _stillImagePercent, inFrameCount: frameCount)))
-            // For end of writing / progress
+            
             var writingVideoFinished = false
-            var writingAudioFinished = false
             var currentFrameCount = 0
+            
             func didCompleteWriting() {
-                guard writingAudioFinished && writingVideoFinished else { return }
+                guard writingVideoFinished else { return }
                 assetWriter?.finishWriting {
                     if self.assetWriter?.status == .completed {
                         completion(destinationURL)
@@ -524,16 +387,15 @@ class LivePhoto {
                     }
                 }
             }
-            // Start writing video
+            
             if videoReader?.startReading() ?? false {
                 videoWriterInput.requestMediaDataWhenReady(on: DispatchQueue(label: "videoWriterInputQueue")) {
                     while videoWriterInput.isReadyForMoreMediaData {
                         if let sampleBuffer = videoReaderOutput.copyNextSampleBuffer()  {
                             currentFrameCount += 1
-                            let percent:CGFloat = CGFloat(currentFrameCount)/CGFloat(frameCount)
+                            let percent:CGFloat = CGFloat(currentFrameCount)/CGFloat(max(frameCount, 1))
                             progress(percent)
                             if !videoWriterInput.append(sampleBuffer) {
-                                print("Cannot write: \(String(describing: self.assetWriter?.error?.localizedDescription))")
                                 self.videoReader?.cancelReading()
                             }
                         } else {
@@ -547,82 +409,47 @@ class LivePhoto {
                 writingVideoFinished = true
                 didCompleteWriting()
             }
-            // Start writing audio
-            if audioReader?.startReading() ?? false {
-                audioWriterInput?.requestMediaDataWhenReady(on: DispatchQueue(label: "audioWriterInputQueue")) {
-                    while audioWriterInput?.isReadyForMoreMediaData ?? false {
-                        guard let sampleBuffer = audioReaderOutput?.copyNextSampleBuffer() else {
-                            audioWriterInput?.markAsFinished()
-                            writingAudioFinished = true
-                            didCompleteWriting()
-                            return
-                        }
-                        audioWriterInput?.append(sampleBuffer)
-                    }
-                }
-            } else {
-                writingAudioFinished = true
-                didCompleteWriting()
-            }
         } catch {
-            print(error)
             completion(nil)
         }
     }
     
     private func metadataForAssetID(_ assetIdentifier: String) -> AVMetadataItem {
         let item = AVMutableMetadataItem()
-        let keyContentIdentifier =  "com.apple.quicktime.content.identifier"
-        let keySpaceQuickTimeMetadata = "mdta"
-        item.key = keyContentIdentifier as (NSCopying & NSObjectProtocol)?
-        item.keySpace = AVMetadataKeySpace(rawValue: keySpaceQuickTimeMetadata)
+        item.key = "com.apple.quicktime.content.identifier" as (NSCopying & NSObjectProtocol)?
+        item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
         item.value = assetIdentifier as (NSCopying & NSObjectProtocol)?
         item.dataType = "com.apple.metadata.datatype.UTF-8"
         return item
     }
     
     private func createMetadataAdaptorForStillImageTime() -> AVAssetWriterInputMetadataAdaptor {
-        let keyStillImageTime = "com.apple.quicktime.still-image-time"
-        let keySpaceQuickTimeMetadata = "mdta"
         let spec : NSDictionary = [
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
-            "\(keySpaceQuickTimeMetadata)/\(keyStillImageTime)",
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
-            "com.apple.metadata.datatype.int8"            ]
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.still-image-time",
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
+        ]
         var desc : CMFormatDescription? = nil
         CMMetadataFormatDescriptionCreateWithMetadataSpecifications(allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed, metadataSpecifications: [spec] as CFArray, formatDescriptionOut: &desc)
-        let input = AVAssetWriterInput(mediaType: .metadata,
-                                       outputSettings: nil, sourceFormatHint: desc)
+        let input = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: desc)
         return AVAssetWriterInputMetadataAdaptor(assetWriterInput: input)
     }
     
     private func metadataItemForStillImageTime() -> AVMetadataItem {
         let item = AVMutableMetadataItem()
-        let keyStillImageTime = "com.apple.quicktime.still-image-time"
-        let keySpaceQuickTimeMetadata = "mdta"
-        item.key = keyStillImageTime as (NSCopying & NSObjectProtocol)?
-        item.keySpace = AVMetadataKeySpace(rawValue: keySpaceQuickTimeMetadata)
+        item.key = "com.apple.quicktime.still-image-time" as (NSCopying & NSObjectProtocol)?
+        item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
         item.value = 0 as (NSCopying & NSObjectProtocol)?
         item.dataType = "com.apple.metadata.datatype.int8"
         return item
     }
 
     private func createMetadataAdaptorForLivePhotoAuto() -> AVAssetWriterInputMetadataAdaptor {
-        let keyLivePhotoAuto = "com.apple.quicktime.live-photo.auto"
-        let keySpace = "mdta"
         let spec: NSDictionary = [
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
-                "\(keySpace)/\(keyLivePhotoAuto)",
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
-                "com.apple.metadata.datatype.int8"
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.live-photo.auto",
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
         ]
         var desc: CMFormatDescription? = nil
-        CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-            allocator: kCFAllocatorDefault,
-            metadataType: kCMMetadataFormatType_Boxed,
-            metadataSpecifications: [spec] as CFArray,
-            formatDescriptionOut: &desc
-        )
+        CMMetadataFormatDescriptionCreateWithMetadataSpecifications(allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed, metadataSpecifications: [spec] as CFArray, formatDescriptionOut: &desc)
         let input = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: desc)
         return AVAssetWriterInputMetadataAdaptor(assetWriterInput: input)
     }
@@ -635,139 +462,22 @@ class LivePhoto {
         item.dataType = "com.apple.metadata.datatype.int8"
         return item
     }
-
 }
 
 fileprivate extension AVAsset {
     func countFrames(exact:Bool) -> Int {
-        
         var frameCount = 0
-        
-        if let videoReader = try? AVAssetReader(asset: self)  {
-            
-            if let videoTrack = self.tracks(withMediaType: .video).first {
-                
-                frameCount = Int(CMTimeGetSeconds(self.duration) * Float64(videoTrack.nominalFrameRate))
-                
-                
-                if exact {
-                    
-                    frameCount = 0
-                    
-                    let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-                    videoReader.add(videoReaderOutput)
-                    
-                    videoReader.startReading()
-                    
-                    // count frames
-                    while true {
-                        let sampleBuffer = videoReaderOutput.copyNextSampleBuffer()
-                        if sampleBuffer == nil {
-                            break
-                        }
-                        frameCount += 1
-                    }
-                    
-                    videoReader.cancelReading()
-                }
-                
-                
-            }
+        if let videoReader = try? AVAssetReader(asset: self), let videoTrack = self.tracks(withMediaType: .video).first {
+            frameCount = Int(CMTimeGetSeconds(self.duration) * Float64(videoTrack.nominalFrameRate))
         }
-        
         return frameCount
     }
-    
-    func stillImageTime() -> CMTime?  {
-        
-        var stillTime:CMTime? = nil
-        
-        if let videoReader = try? AVAssetReader(asset: self)  {
-            
-            if let metadataTrack = self.tracks(withMediaType: .metadata).first {
-                
-                let videoReaderOutput = AVAssetReaderTrackOutput(track: metadataTrack, outputSettings: nil)
-                
-                videoReader.add(videoReaderOutput)
-                
-                videoReader.startReading()
-                
-                let keyStillImageTime = "com.apple.quicktime.still-image-time"
-                let keySpaceQuickTimeMetadata = "mdta"
-                
-                var found = false
-                
-                while found == false {
-                    if let sampleBuffer = videoReaderOutput.copyNextSampleBuffer() {
-                        if CMSampleBufferGetNumSamples(sampleBuffer) != 0 {
-                            let group = AVTimedMetadataGroup(sampleBuffer: sampleBuffer)
-                            for item in group?.items ?? [] {
-                                if item.key as? String == keyStillImageTime && item.keySpace!.rawValue == keySpaceQuickTimeMetadata {
-                                    stillTime = group?.timeRange.start
-                                    //print("stillImageTime = \(CMTimeGetSeconds(stillTime!))")
-                                    found = true
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        break;
-                    }
-                }
-                
-                videoReader.cancelReading()
-                
-            }
-        }
-        
-        return stillTime
-    }
-    
     func makeStillImageTimeRange(percent:Float, inFrameCount:Int = 0) -> CMTimeRange {
-        
         var time = self.duration
-        
         var frameCount = inFrameCount
-        
-        if frameCount == 0 {
-            frameCount = self.countFrames(exact: true)
-        }
-        
-        let frameDuration = Int64(Float(time.value) / Float(frameCount))
-        
+        if frameCount == 0 { frameCount = self.countFrames(exact: true) }
+        let frameDuration = Int64(Float(time.value) / Float(max(frameCount, 1)))
         time.value = Int64(Float(time.value) * percent)
-        
-        //print("stillImageTime = \(CMTimeGetSeconds(time))")
-        
         return CMTimeRangeMake(start: time, duration: CMTimeMake(value: frameDuration, timescale: time.timescale))
-    }
-    
-    func getAssetFrame(percent:Float) -> UIImage?
-    {
-        
-        let imageGenerator = AVAssetImageGenerator(asset: self)
-        imageGenerator.appliesPreferredTrackTransform = true
-        
-        imageGenerator.requestedTimeToleranceAfter = CMTimeMake(value: 1,timescale: 100)
-        imageGenerator.requestedTimeToleranceBefore = CMTimeMake(value: 1,timescale: 100)
-        
-        var time = self.duration
-        
-        time.value = Int64(Float(time.value) * percent)
-        
-        do {
-            var actualTime = CMTime.zero
-            let imageRef = try imageGenerator.copyCGImage(at: time, actualTime:&actualTime)
-            
-            let img = UIImage(cgImage: imageRef)
-            
-            return img
-        }
-        catch let error as NSError
-        {
-            print("Image generation failed with error \(error)")
-            return nil
-        }
     }
 }
