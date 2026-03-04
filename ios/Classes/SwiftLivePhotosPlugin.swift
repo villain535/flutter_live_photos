@@ -184,6 +184,7 @@ class LivePhotoClient {
         guard let movURL = movURL else { return }
         let asset = AVURLAsset(url: movURL, options: nil)
         let imgGenerator = AVAssetImageGenerator(asset: asset)
+        imgGenerator.appliesPreferredTrackTransform = true
         let filePath = self.filePath(forKey: STILL_KEY)
         if let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil) {
             let pngImage = UIImage(cgImage: cgImage)
@@ -323,12 +324,12 @@ class LivePhoto {
             percent = Float(stillImageTime.value) / Float(videoAsset.duration.value)
         }
         guard let imageFrame = videoAsset.getAssetFrame(percent: percent) else { return nil }
-        guard let jpegData = imageFrame.jpegData(compressionQuality: 1.0) else { return nil }
-        guard let url = cacheDirectory?.appendingPathComponent(UUID().uuidString).appendingPathExtension("jpg") else { return nil }
-        do {
-            try? jpegData.write(to: url)
-            return url
-        }
+        guard let url = cacheDirectory?.appendingPathComponent(UUID().uuidString).appendingPathExtension("heic") else { return nil }
+        guard let cgImage = imageFrame.cgImage,
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.heic" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return url
     }
     private func clearCache() {
         if let cacheDirectory = cacheDirectory {
@@ -346,7 +347,7 @@ class LivePhoto {
         }
         let assetIdentifier = UUID().uuidString
         let _keyPhotoURL = imageURL ?? generateKeyPhoto(from: videoURL)
-        guard let keyPhotoURL = _keyPhotoURL, let pairedImageURL = addAssetID(assetIdentifier, toImage: keyPhotoURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("jpg")) else {
+        guard let keyPhotoURL = _keyPhotoURL, let pairedImageURL = addAssetID(assetIdentifier, toImage: keyPhotoURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("heic")) else {
             DispatchQueue.main.async {
                 completion(nil, nil)
             }
@@ -434,7 +435,7 @@ class LivePhoto {
     }
     
     func addAssetID(_ assetIdentifier: String, toImage imageURL: URL, saveTo destinationURL: URL) -> URL? {
-        guard let imageDestination = CGImageDestinationCreateWithURL(destinationURL as CFURL, kUTTypeJPEG, 1, nil),
+        guard let imageDestination = CGImageDestinationCreateWithURL(destinationURL as CFURL, "public.heic" as CFString, 1, nil),
             let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
             var imageProperties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [AnyHashable : Any] else { return nil }
         let assetIdentifierKey = "17"
