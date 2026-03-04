@@ -187,7 +187,7 @@ class LivePhotoClient {
         imgGenerator.appliesPreferredTrackTransform = true
         let filePath = self.filePath(forKey: STILL_KEY)
         if let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil) {
-            let pngImage = UIImage(cgImage: cgImage)
+            let pngImage = ensureMinimumSize(UIImage(cgImage: cgImage))
             if let pngRep = pngImage.pngData() {
                 if let filePath = filePath {
                     do {
@@ -252,6 +252,23 @@ class LivePhotoClient {
             }
         }
     }
+}
+
+fileprivate func ensureMinimumSize(_ image: UIImage, minWidth: CGFloat = 1080, minHeight: CGFloat = 1920) -> UIImage {
+    let currentWidth = image.size.width
+    let currentHeight = image.size.height
+    if currentWidth >= minWidth && currentHeight >= minHeight {
+        return image
+    }
+    let widthScale = minWidth / currentWidth
+    let heightScale = minHeight / currentHeight
+    let scale = max(widthScale, heightScale)
+    let newSize = CGSize(width: currentWidth * scale, height: currentHeight * scale)
+    UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+    image.draw(in: CGRect(origin: .zero, size: newSize))
+    let scaledImage = UIGraphicsGetImageFromCurrentImageContext()
+    UIGraphicsEndImageContext()
+    return scaledImage ?? image
 }
 
 //
@@ -324,8 +341,9 @@ class LivePhoto {
             percent = Float(stillImageTime.value) / Float(videoAsset.duration.value)
         }
         guard let imageFrame = videoAsset.getAssetFrame(percent: percent) else { return nil }
+        let scaledFrame = ensureMinimumSize(imageFrame)
         guard let url = cacheDirectory?.appendingPathComponent(UUID().uuidString).appendingPathExtension("heic") else { return nil }
-        guard let cgImage = imageFrame.cgImage,
+        guard let cgImage = scaledFrame.cgImage,
               let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.heic" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, cgImage, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
