@@ -455,11 +455,24 @@ class LivePhoto {
     func addAssetID(_ assetIdentifier: String, toImage imageURL: URL, saveTo destinationURL: URL) -> URL? {
         guard let imageDestination = CGImageDestinationCreateWithURL(destinationURL as CFURL, "public.heic" as CFString, 1, nil),
             let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-            var imageProperties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [AnyHashable : Any] else { return nil }
-        let assetIdentifierKey = "17"
-        let assetIdentifierInfo = [assetIdentifierKey : assetIdentifier]
-        imageProperties[kCGImagePropertyMakerAppleDictionary] = assetIdentifierInfo
-        CGImageDestinationAddImageFromSource(imageDestination, imageSource, 0, imageProperties as CFDictionary)
+            let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { return nil }
+
+        // Convert to sRGB so CGImageDestination embeds an ICC profile (prof) rather than
+        // a parametric nclx entry with unspecified primaries, which iOS rejects as a wallpaper.
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let context = CGContext(
+            data: nil, width: cgImage.width, height: cgImage.height,
+            bitsPerComponent: 8, bytesPerRow: 0, space: sRGB,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ), let sRGBImage = { context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)); return context.makeImage() }() else { return nil }
+
+        var imageProperties: [AnyHashable: Any] = [:]
+        if let props = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [AnyHashable: Any] {
+            imageProperties = props
+        }
+        imageProperties[kCGImagePropertyMakerAppleDictionary] = ["17": assetIdentifier]
+
+        CGImageDestinationAddImage(imageDestination, sRGBImage, imageProperties as CFDictionary)
         CGImageDestinationFinalize(imageDestination)
         return destinationURL
     }
