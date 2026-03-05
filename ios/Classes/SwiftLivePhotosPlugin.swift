@@ -466,11 +466,9 @@ class LivePhoto {
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ), let sRGBImage = { context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)); return context.makeImage() }() else { return nil }
 
-        var imageProperties: [AnyHashable: Any] = [:]
-        if let props = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [AnyHashable: Any] {
-            imageProperties = props
-        }
-        imageProperties[kCGImagePropertyMakerAppleDictionary] = ["17": assetIdentifier]
+        let imageProperties: [AnyHashable: Any] = [
+            kCGImagePropertyMakerAppleDictionary: ["17": assetIdentifier]
+        ]
 
         CGImageDestinationAddImage(imageDestination, sRGBImage, imageProperties as CFDictionary)
         CGImageDestinationFinalize(imageDestination)
